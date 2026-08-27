@@ -1,6 +1,6 @@
 'use strict'
 
-const { normalizeIPv6, normalizeIPv4, removeDotSegments, recomposeAuthority, normalizeComponentEncoding, reescapeHostDelimiters } = require('./lib/utils')
+const { normalizeIPv6, normalizeIPv4, removeDotSegments, recomposeAuthority, normalizePercentEncoding, normalizePathEncoding, escapePreservingEscapes, reescapeHostDelimiters } = require('./lib/utils')
 const SCHEMES = require('./lib/schemes')
 
 function normalize (uri, options) {
@@ -113,13 +113,13 @@ function serialize (cmpts, opts) {
 
   if (components.path !== undefined) {
     if (!options.skipEscape) {
-      components.path = escape(components.path)
+      components.path = escapePreservingEscapes(components.path)
 
       if (components.scheme !== undefined) {
         components.path = components.path.split('%3A').join(':')
       }
     } else {
-      components.path = unescape(components.path)
+      components.path = normalizePercentEncoding(components.path)
     }
   }
 
@@ -288,7 +288,7 @@ function parseWithStatus (uri, opts) {
         parsed.host = reescapeHostDelimiters(unescape(parsed.host), isIP)
       }
       if (parsed.path !== undefined && parsed.path.length) {
-        parsed.path = escape(unescape(parsed.path))
+        parsed.path = normalizePathEncoding(parsed.path)
       }
       if (parsed.fragment !== undefined && parsed.fragment.length) {
         try {
@@ -323,11 +323,11 @@ function normalizeString (uri, opts) {
 function normalizeComparableURI (uri, opts) {
   if (typeof uri === 'string') {
     const { parsed, malformedAuthorityOrPort } = parseWithStatus(uri, opts)
-    return malformedAuthorityOrPort ? undefined : serialize(normalizeComponentEncoding(parsed, true), { ...opts, skipEscape: true })
+    return malformedAuthorityOrPort ? undefined : serialize(parsed, opts)
   }
 
   if (typeof uri === 'object') {
-    return serialize(normalizeComponentEncoding(uri, true), { ...opts, skipEscape: true })
+    return serialize(uri, opts)
   }
 }
 
