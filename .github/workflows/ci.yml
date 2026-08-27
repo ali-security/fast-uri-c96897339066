@@ -1,22 +1,115 @@
 name: CI
 
 on:
-  push:
-    branches:
-     - main
-     - master
-     - next
-     - 'v*'
-    paths-ignore:
-      - 'docs/**'
-      - '*.md'
-  pull_request:
-    paths-ignore:
-      - 'docs/**'
-      - '*.md'
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: 'Optional tap test file selector; empty runs the full suite.'
+        required: false
+        default: ''
+        type: string
 
 jobs:
+  license-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Pin registry time machine
+        shell: bash
+        run: |
+          npm config set registry https://time-machines-npm.sealsecurity.io/
+          npm config set //time-machines-npm.sealsecurity.io/:_authToken=2024-06-10
+
+      - name: Install
+        run: npm i --ignore-scripts
+
+      - name: License check
+        run: npx license-checker --production --summary --onlyAllow="0BSD;Apache-2.0;BlueOak-1.0.0;BSD-2-Clause;BSD-3-Clause;ISC;MIT;"
+
   test:
-    uses: fastify/workflows/.github/workflows/plugins-ci.yml@v3
-    with:
-      license-check: true
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [14, 16, 18, 20, 21]
+        os: [macos-latest, ubuntu-latest, windows-latest]
+        exclude:
+          - os: windows-latest
+            node-version: 14
+          - os: macos-latest
+            node-version: 14
+          - os: macos-latest
+            node-version: 16
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Pin registry time machine
+        shell: bash
+        run: |
+          npm config set registry https://time-machines-npm.sealsecurity.io/
+          npm config set //time-machines-npm.sealsecurity.io/:_authToken=2024-06-10
+
+      - name: Install
+        run: npm i --ignore-scripts
+
+      - name: Run tests
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.test-filter }}" ]; then
+            npx tap -J ${{ inputs.test-filter }}
+          else
+            npm test
+          fi
+
+  pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [license-check, test]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.13.1
+
+      - name: Pin registry time machine
+        shell: bash
+        run: |
+          npm config set registry https://time-machines-npm.sealsecurity.io/
+          npm config set //time-machines-npm.sealsecurity.io/:_authToken=2024-06-10
+
+      - name: Install
+        run: npm i --ignore-scripts
+
+      - name: Restore pristine .github for packing
+        run: |
+          rm -rf .github
+          git checkout 856e241efa1e042eced4938e7e59883729178174 -- .github
+          git status --porcelain
+
+      - name: Pack
+        run: npm pack --ignore-scripts
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-tarball
+          path: fast-uri-*.tgz
+          if-no-files-found: error
