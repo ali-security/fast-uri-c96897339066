@@ -57,6 +57,15 @@ test('compatibility Parse', (t) => {
     //  'mailto:user@%E7%B4%8D%E8%B1%86.example.org?subject=Test&body=NATTO'
   ]
   toParse.forEach((x) => {
+    // Malformed bracketed IP literals are reported as errors by fast-uri and
+    // never rewritten, while uri-js silently accepts them: pin the expected
+    // output for those instead of comparing against uri-js.
+    if (x === '//[2001:dbZ::1]:80' || x === '//[2606:2800:220:1:248:1893:25c8:1946:43209]') {
+      const parsed = fastifyURI.parse(x)
+      t.equal(parsed.error, 'URI host is malformed.', 'Compatibility parse: ' + x)
+      t.equal(parsed.host, x.slice(2, x.indexOf(']') + 1).toLowerCase(), 'Compatibility parse host: ' + x)
+      return
+    }
     t.same(fastifyURI.parse(x), urijs.parse(x), 'Compatibility parse: ' + x)
   })
   t.end()

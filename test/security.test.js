@@ -89,15 +89,19 @@ test('parse does not re-canonicalise IP literal hosts', (t) => {
   t.notOk(mixed.error, 'mixed IPv4 / reg-name host should not error')
   t.equal(mixed.host, '10.10.10.10.example.com', 'mixed IPv4 / reg-name host is left unchanged')
 
+  // a bracketed literal that is not a valid IP-literal is reported as
+  // malformed rather than IDN-canonicalised: the host itself is handed back
+  // unrewritten (only lowercased) so nothing resolves to a different address
   const bracketed = URI.parse('http://[2001:dbZ::7]/')
-  t.notOk(bracketed.error, 'bracketed host should not error')
+  t.equal(bracketed.error, 'URI host is malformed.', 'malformed bracketed host errors')
   t.equal(bracketed.host, '[2001:dbz::7]', 'bracketed host is left to the IPv6 normalizer')
 
   t.equal(URI.parse('http://[2001:db8::1]/').host, '2001:db8::1', 'IPv6 host is not re-canonicalised')
 
-  // the WHATWG parser accepts this literal and would re-serialise it as
-  // '[0:1:2:3:4:5:6:7]', while normalizeIPv6 keeps the bracketed source form
-  t.equal(URI.parse('http://[::1:2:3:4:5:6:7]/').host, '[::1:2:3:4:5:6:7]', 'bracketed IPv6 literal keeps its source form')
+  // this literal is a valid IPv6 address ("::" standing in for a single zero
+  // hextet), so it normalizes to the same canonical form the WHATWG parser
+  // produces instead of being kept in its bracketed source form
+  t.equal(URI.parse('http://[::1:2:3:4:5:6:7]/').host, '0:1:2:3:4:5:6:7', 'bracketed IPv6 literal is canonicalised')
 })
 
 test('parse marks malformed authority and port inputs as errors', (t) => {
