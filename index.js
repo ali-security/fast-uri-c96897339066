@@ -3,6 +3,25 @@
 const { normalizeIPv6, normalizeIPv4, removeDotSegments, recomposeAuthority, normalizePercentEncoding, normalizePathEncoding, escapePreservingEscapes, reescapeHostDelimiters } = require('./lib/utils')
 const SCHEMES = require('./lib/schemes')
 
+// RFC 3986 scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ). The grammar is
+// checked before any case folding: Unicode look-alikes such as U+212A KELVIN
+// SIGN or U+017F LATIN SMALL LETTER LONG S fold to "k"/"s" and would otherwise
+// slip through as if they were ASCII scheme characters.
+const VALID_SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*$/u
+const MALFORMED_SCHEME_ERROR = 'URI scheme is malformed.'
+
+// Percent-decoding a scheme may reveal characters the scheme grammar forbids
+// ("%2f%2fevil.example" -> "//evil.example", "%0d%0aSet-Cookie" -> CR LF), which
+// would introduce authority or header structure the original input never had.
+// Decode, then reject anything that is not a legal scheme.
+function decodeValidScheme (scheme) {
+  const decodedScheme = unescape(String(scheme))
+  if (!VALID_SCHEME.test(decodedScheme)) {
+    throw new TypeError(MALFORMED_SCHEME_ERROR)
+  }
+  return decodedScheme
+}
+
 function normalize (uri, options) {
   if (typeof uri === 'string') {
     uri = normalizeString(uri, options)
@@ -14,9 +33,9 @@ function normalize (uri, options) {
 
 function resolve (baseURI, relativeURI, options) {
   const schemelessOptions = Object.assign({ scheme: 'null' }, options)
-  const { parsed: baseParsed, malformedAuthorityOrPort: baseMalformed } = parseWithStatus(baseURI, schemelessOptions)
-  const { parsed: relativeParsed, malformedAuthorityOrPort: relativeMalformed } = parseWithStatus(relativeURI, schemelessOptions)
-  if (baseMalformed || relativeMalformed) {
+  const { parsed: baseParsed, malformedAuthorityOrPort: baseMalformed, malformedScheme: baseMalformedScheme } = parseWithStatus(baseURI, schemelessOptions)
+  const { parsed: relativeParsed, malformedAuthorityOrPort: relativeMalformed, malformedScheme: relativeMalformedScheme } = parseWithStatus(relativeURI, schemelessOptions)
+  if (baseMalformed || relativeMalformed || baseMalformedScheme || relativeMalformedScheme) {
     throw new Error(baseParsed.error || relativeParsed.error || 'URI is malformed.')
   }
   const resolved = resolveComponents(baseParsed, relativeParsed, schemelessOptions, true)
@@ -110,6 +129,10 @@ function serialize (cmpts, opts) {
   const options = Object.assign({}, opts)
   const uriTokens = []
 
+  if (components.scheme) {
+    components.scheme = decodeValidScheme(components.scheme)
+  }
+
   // find scheme handler
   const schemeHandler = SCHEMES[(options.scheme || components.scheme || '').toLowerCase()]
 
@@ -129,6 +152,8 @@ function serialize (cmpts, opts) {
   }
 
   if (options.reference !== 'suffix' && components.scheme) {
+    // Scheme handlers may replace the scheme during serialization.
+    components.scheme = decodeValidScheme(components.scheme)
     uriTokens.push(components.scheme)
     uriTokens.push(':')
   }
@@ -242,6 +267,7 @@ function parseWithStatus (uri, opts) {
   const gotEncoding = uri.indexOf('%') !== -1
   let malformedAuthorityOrPort = false
   let malformedIPLiteral = false
+  let malformedScheme = false
   let isIP = false
   if (options.reference === 'suffix') uri = (options.scheme ? options.scheme + ':' : '') + '//' + uri
 
@@ -291,6 +317,19 @@ function parseWithStatus (uri, opts) {
     parsed.path = matches[6] || ''
     parsed.query = matches[7]
     parsed.fragment = matches[8]
+
+    // Decode and validate the scheme up front, before it selects a scheme
+    // handler: a percent-encoded scheme must not both escape the RFC 3986
+    // grammar and skip the scheme specific parsing its decoded form implies.
+    if (parsed.scheme !== undefined) {
+      const decodedScheme = unescape(parsed.scheme)
+      if (VALID_SCHEME.test(decodedScheme)) {
+        parsed.scheme = decodedScheme.toLowerCase()
+      } else {
+        parsed.error = parsed.error || MALFORMED_SCHEME_ERROR
+        malformedScheme = true
+      }
+    }
 
     // fix port number
     if (isNaN(parsed.port)) {
@@ -357,9 +396,6 @@ function parseWithStatus (uri, opts) {
     }
 
     if (!schemeHandler || (schemeHandler && !schemeHandler.skipNormalize)) {
-      if (gotEncoding && parsed.scheme !== undefined) {
-        parsed.scheme = unescape(parsed.scheme)
-      }
       if (gotEncoding && parsed.userinfo !== undefined) {
         parsed.userinfo = unescape(parsed.userinfo)
       }
@@ -388,7 +424,7 @@ function parseWithStatus (uri, opts) {
   } else {
     parsed.error = parsed.error || 'URI can not be parsed.'
   }
-  return { parsed, malformedAuthorityOrPort }
+  return { parsed, malformedAuthorityOrPort, malformedScheme }
 }
 
 function parse (uri, opts) {
@@ -396,20 +432,26 @@ function parse (uri, opts) {
 }
 
 function normalizeString (uri, opts) {
-  const { parsed, malformedAuthorityOrPort } = parseWithStatus(uri, opts)
-  // a malformed authority or port must never be canonicalized into a
+  const { parsed, malformedAuthorityOrPort, malformedScheme } = parseWithStatus(uri, opts)
+  // a malformed authority, port or scheme must never be canonicalized into a
   // different, valid URI: hand the input back untouched
-  return malformedAuthorityOrPort ? uri : serialize(parsed, opts)
+  return malformedAuthorityOrPort || malformedScheme ? uri : serialize(parsed, opts)
 }
 
 function normalizeComparableURI (uri, opts) {
   if (typeof uri === 'string') {
-    const { parsed, malformedAuthorityOrPort } = parseWithStatus(uri, opts)
-    return malformedAuthorityOrPort ? undefined : serialize(parsed, opts)
+    const { parsed, malformedAuthorityOrPort, malformedScheme } = parseWithStatus(uri, opts)
+    return malformedAuthorityOrPort || malformedScheme ? undefined : serialize(parsed, opts)
   }
 
   if (typeof uri === 'object') {
-    return serialize(uri, opts)
+    // serialize rejects a malformed scheme by throwing: comparison must fail
+    // closed rather than propagate the error out of equal()
+    try {
+      return serialize(uri, opts)
+    } catch {
+      return undefined
+    }
   }
 }
 
