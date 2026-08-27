@@ -304,3 +304,186 @@ test('parse does not reject a literal backslash in the query or fragment', (t) =
   t.notOk(parsed.error, 'backslash in query/fragment does not mark the URI malformed')
   t.equal(parsed.host, 'host.example.com', 'host parsed normally')
 })
+
+test('parse rejects a malformed authority introducer (\\\\, /\\, \\/) in place of //', (t) => {
+  // Regression: "\\", "/\\", "\\/" after the scheme colon are not valid authority
+  // introducers. Node's URL treats "\\" as interchangeable with "/" on special
+  // schemes, so "http:\\\\evil.com/path" would be parsed as host "evil.com" by
+  // Node, but fast-uri must reject it as malformed to prevent SSRF/redirect bypass.
+  const cases = [
+    'http:\\\\evil.com/path',
+    'http:/\\evil.com/path',
+    'http:\\/evil.com/path',
+    'ws:\\\\evil.com/chat',
+    'wss:\\\\evil.com/chat',
+    'ftp:\\\\evil.com/',
+    '\\\\evil.com/path'
+  ]
+
+  t.plan(cases.length)
+
+  cases.forEach((input) => {
+    t.equal(
+      URI.parse(input).error,
+      'URI authority must not contain a literal backslash.',
+      input
+    )
+  })
+})
+
+test('normalize does not canonicalize a malformed-authority-introducer URI', (t) => {
+  const cases = [
+    'http:\\\\evil.com/path',
+    'http:/\\evil.com/path'
+  ]
+
+  t.plan(cases.length)
+
+  cases.forEach((input) => {
+    t.equal(URI.normalize(input), input, input)
+  })
+})
+
+test('equal returns false for malformed-authority-introducer URIs', (t) => {
+  const pairs = [
+    ['http:\\\\evil.com/path', 'http://evil.com/path'],
+    ['http:/\\evil.com/path', 'http://evil.com/path']
+  ]
+
+  t.plan(pairs.length)
+
+  pairs.forEach(([left, right]) => {
+    t.equal(URI.equal(left, right), false, `${left} != ${right}`)
+  })
+})
+
+test('resolve throws on malformed authority introducer', (t) => {
+  // resolve() returns a plain string with no error field, so the only safe
+  // behavior is to throw when either component has a malformed authority.
+  const pairs = [
+    ['https://allowed.com/', '\\\\evil.com/path'],
+    ['\\\\evil.com/path', 'https://allowed.com/'],
+    ['https://allowed.com/', 'http:/\\evil.com/path'],
+    ['https://allowed.com/', 'http:\\/evil.com/path']
+  ]
+
+  t.plan(pairs.length)
+
+  pairs.forEach(([base, rel]) => {
+    t.throws(
+      () => URI.resolve(base, rel),
+      /URI authority must not contain a literal backslash/,
+      `${base} + ${rel}`
+    )
+  })
+})
+
+test('parse rejects a whitespace-split authority introducer (TAB, LF, CR)', (t) => {
+  // The WHATWG URL parser removes TAB (U+0009), LF (U+000A) and CR (U+000D) from
+  // the input before parsing, so a stripped character wedged into the introducer
+  // ("/<TAB>\\", "/<TAB>/", or a leading "<TAB>//") reaches an authority in Node
+  // while fast-uri would otherwise fold it into the path. These must be rejected
+  // like the adjacent "\\", "/\\", "\\/" forms.
+  const cases = [
+    { input: '/\t\\evil.com/path', expectedError: 'URI authority must not contain a literal backslash.' },
+    { input: '/\t/evil.com/path', expectedError: 'URI authority introducer must not contain whitespace.' },
+    { input: '/\n\\evil.com/path', expectedError: 'URI authority must not contain a literal backslash.' },
+    { input: '/\r\\evil.com/path', expectedError: 'URI authority must not contain a literal backslash.' },
+    { input: '\t//evil.com/path', expectedError: 'URI authority introducer must not contain whitespace.' },
+    { input: '\t/\\evil.com/path', expectedError: 'URI authority must not contain a literal backslash.' },
+    { input: 'https:/\t/evil.com/path', expectedError: 'URI authority introducer must not contain whitespace.' }
+  ]
+
+  t.plan(cases.length)
+
+  cases.forEach(({ input, expectedError }) => {
+    t.equal(URI.parse(input).error, expectedError, JSON.stringify(input))
+  })
+})
+
+test('resolve throws on a whitespace-split authority introducer', (t) => {
+  const pairs = [
+    ['https://allowed.com/', '/\t\\evil.com/path'],
+    ['https://allowed.com/', '/\t/evil.com/path'],
+    ['https://allowed.com/', '/\n\\evil.com/path'],
+    ['/\t/evil.com/path', 'https://allowed.com/']
+  ]
+
+  t.plan(pairs.length)
+
+  pairs.forEach(([base, rel]) => {
+    t.throws(
+      () => URI.resolve(base, rel),
+      /URI authority (must not contain a literal backslash|introducer must not contain whitespace)/,
+      `${JSON.stringify(base)} + ${JSON.stringify(rel)}`
+    )
+  })
+})
+
+test('parse rejects a malformed authority introducer followed by a colon', (t) => {
+  // A colon later in the reference must not buy the introducer an exemption: a
+  // backslash is not a legal scheme character, so "\\evil.com:80/path" is still
+  // a "\\"-for-"//" introducer, and Node resolves it against a base to the
+  // authority "evil.com:80". Same for a userinfo colon ("\\user:pass@evil.com/")
+  // and for a backslash reached only after the TAB/LF/CR Node strips.
+  const cases = [
+    '\\\\evil.com:80/path',
+    '\\\\user:pass@evil.com/',
+    '/\\evil.com:80/path',
+    '\\/evil.com:80/path',
+    '\t\\\\evil.com:80/path'
+  ]
+
+  t.plan(cases.length)
+
+  cases.forEach((input) => {
+    t.equal(
+      URI.parse(input).error,
+      'URI authority must not contain a literal backslash.',
+      JSON.stringify(input)
+    )
+  })
+})
+
+test('resolve throws on a malformed authority introducer followed by a colon', (t) => {
+  const pairs = [
+    ['https://allowed.com/', '\\\\evil.com:80/path'],
+    ['https://allowed.com/', '\\\\user:pass@evil.com/'],
+    ['\\\\evil.com:80/path', 'https://allowed.com/']
+  ]
+
+  t.plan(pairs.length)
+
+  pairs.forEach(([base, rel]) => {
+    t.throws(
+      () => URI.resolve(base, rel),
+      /URI authority must not contain a literal backslash/,
+      `${JSON.stringify(base)} + ${JSON.stringify(rel)}`
+    )
+  })
+})
+
+test('parse does not reject valid authority introducer patterns', (t) => {
+  // No false positives: "//" introducer and scheme-less "//" must be valid.
+  const cases = [
+    'http://good.com/',
+    'https://good.com/',
+    'ws://good.com/chat',
+    'wss://good.com/chat',
+    'ftp://good.com/',
+    '//good.com/path',
+    '/absolute/path',
+    'relative/path',
+    // a colon in the authority or the path is not an introducer concern
+    '//user:pass@good.com:80/path',
+    'mailto:user@example.com',
+    'foo:bar/baz'
+  ]
+
+  t.plan(cases.length)
+
+  cases.forEach((input) => {
+    const parsed = URI.parse(input)
+    t.notOk(parsed.error, input)
+  })
+})
